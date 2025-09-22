@@ -237,4 +237,4 @@ export class IndexedDBTodoDatabase implements TodoDatabase {
 }
 
 // Export the concrete implementation
-export { IndexedDBTodoDatabase as TodoDatabase };
+export const TodoDatabase = IndexedDBTodoDatabase;

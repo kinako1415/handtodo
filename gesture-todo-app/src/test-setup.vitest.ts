@@ -1,6 +1,7 @@
 /** @format */
 
 import "fake-indexeddb/auto";
+import "@testing-library/jest-dom";
 
 // Mock crypto.randomUUID for testing
 if (!globalThis.crypto) {

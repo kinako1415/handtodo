@@ -24,6 +24,8 @@ async function testSetup() {
     const taskId = await db.addTask({
       text: "Test task",
       completed: false,
+      createdAt: new Date(),
+      updatedAt: new Date(),
     });
     console.log("Task added with ID:", taskId);
 

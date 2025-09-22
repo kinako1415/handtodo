@@ -17,7 +17,7 @@
   - 基本的な CRUD 操作の実装とテスト
   - _要件: 1.1, 1.2, 1.4, 6.1, 6.2_
 
-- [ ] 3. React 状態管理システムの構築
+- [x] 3. React 状態管理システムの構築
 
   - TodoState と AppState の型定義
   - Context API と useReducer を使用した状態管理の実装
