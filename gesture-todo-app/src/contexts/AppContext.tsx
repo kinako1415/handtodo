@@ -7,12 +7,21 @@ import React, {
   useEffect,
   ReactNode,
 } from "react";
-import { AppSettings, CameraPermission } from "../types";
+import { CameraPermission } from "../types";
 import { IndexedDBTodoDatabase } from "../services/database";
+
+// Camera status type
+export type CameraStatus =
+  | "initializing"
+  | "active"
+  | "error"
+  | "disabled"
+  | "permission_denied";
 
 // App-level state interface
 export interface AppState {
   cameraPermission: CameraPermission;
+  cameraStatus: CameraStatus;
   gestureSettings: {
     sensitivity: number;
     debounceTime: number;
@@ -26,6 +35,7 @@ export interface AppState {
 // Action types for app reducer
 export type AppAction =
   | { type: "SET_CAMERA_PERMISSION"; payload: CameraPermission }
+  | { type: "SET_CAMERA_STATUS"; payload: CameraStatus }
   | {
       type: "SET_GESTURE_SETTINGS";
       payload: Partial<AppState["gestureSettings"]>;
@@ -38,6 +48,7 @@ export type AppAction =
 // Initial app state
 const initialAppState: AppState = {
   cameraPermission: "prompt",
+  cameraStatus: "disabled",
   gestureSettings: {
     sensitivity: 0.7,
     debounceTime: 300,
@@ -55,6 +66,12 @@ function appReducer(state: AppState, action: AppAction): AppState {
       return {
         ...state,
         cameraPermission: action.payload,
+      };
+
+    case "SET_CAMERA_STATUS":
+      return {
+        ...state,
+        cameraStatus: action.payload,
       };
 
     case "SET_GESTURE_SETTINGS":
@@ -101,6 +118,7 @@ interface AppContextType {
   dispatch: React.Dispatch<AppAction>;
   // Convenience methods
   setCameraPermission: (permission: CameraPermission) => Promise<void>;
+  setCameraStatus: (status: CameraStatus) => void;
   updateGestureSettings: (
     settings: Partial<AppState["gestureSettings"]>
   ) => Promise<void>;
@@ -203,6 +221,10 @@ export function AppProvider({ children }: AppProviderProps) {
     // Camera permission is not persisted to database as it's runtime state
   };
 
+  const setCameraStatus = (status: CameraStatus) => {
+    dispatch({ type: "SET_CAMERA_STATUS", payload: status });
+  };
+
   const updateGestureSettings = async (
     settings: Partial<AppState["gestureSettings"]>
   ) => {
@@ -281,6 +303,7 @@ export function AppProvider({ children }: AppProviderProps) {
     state,
     dispatch,
     setCameraPermission,
+    setCameraStatus,
     updateGestureSettings,
     setTheme,
     setGestureEnabled,
