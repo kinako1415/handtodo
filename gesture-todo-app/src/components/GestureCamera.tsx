@@ -10,6 +10,7 @@ import { GestureType } from "../types";
 interface GestureCameraProps {
   onGestureDetected: (gesture: GestureType) => void;
   isEnabled: boolean;
+  onVideoElementReady?: (videoElement: HTMLVideoElement | null) => void;
 }
 
 type CameraStatus =
@@ -22,6 +23,7 @@ type CameraStatus =
 export const GestureCamera: React.FC<GestureCameraProps> = ({
   onGestureDetected,
   isEnabled,
+  onVideoElementReady,
 }) => {
   const videoRef = useRef<HTMLVideoElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
@@ -162,6 +164,13 @@ export const GestureCamera: React.FC<GestureCameraProps> = ({
 
     return cleanup;
   }, [isEnabled, cameraStatus, initializeMediaPipe, cleanup]);
+
+  // Effect to notify parent about video element
+  useEffect(() => {
+    if (onVideoElementReady) {
+      onVideoElementReady(videoRef.current);
+    }
+  }, [onVideoElementReady, cameraStatus]);
 
   // Retry function for error states
   const handleRetry = () => {

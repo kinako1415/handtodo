@@ -3,10 +3,13 @@
 import React, { useEffect } from "react";
 import "./App.css";
 import { useTodo, useApp } from "./contexts";
-import { TodoList, GestureCamera } from "./components";
+import { TodoList, GestureCamera, GestureManager } from "./components";
 import { GestureType } from "./types";
 
 function AppContent() {
+  const [videoElement, setVideoElement] =
+    React.useState<HTMLVideoElement | null>(null);
+
   const {
     state: todoState,
     loadTasks,
@@ -64,12 +67,14 @@ function AppContent() {
 
   const handleGestureDetected = (gesture: GestureType) => {
     setCurrentGesture(gesture);
-
-    // Basic gesture handling - full implementation will be in task 7
+    // Note: Actual gesture handling is now done by GestureManager
     if (gesture !== "none") {
       console.log("Gesture detected:", gesture);
-      // TODO: Implement gesture actions in task 7
     }
+  };
+
+  const handleVideoElementReady = (element: HTMLVideoElement | null) => {
+    setVideoElement(element);
   };
 
   if (!appState.isInitialized) {
@@ -155,9 +160,18 @@ function AppContent() {
             <GestureCamera
               onGestureDetected={handleGestureDetected}
               isEnabled={appState.gestureEnabled}
+              onVideoElementReady={handleVideoElementReady}
             />
           </div>
         </main>
+
+        {/* Gesture Manager - handles gesture-to-action mapping */}
+        <GestureManager
+          videoElement={videoElement}
+          isEnabled={
+            appState.gestureEnabled && todoState.cameraStatus === "active"
+          }
+        />
 
         {/* Debug info - can be removed in production */}
         {import.meta.env.DEV && (
