@@ -11,6 +11,7 @@ interface GestureCameraProps {
   onGestureDetected: (gesture: GestureType) => void;
   isEnabled: boolean;
   onVideoElementReady?: (videoElement: HTMLVideoElement | null) => void;
+  onHandDetectionChange?: (isDetected: boolean) => void;
 }
 
 type CameraStatus =
@@ -24,6 +25,7 @@ export const GestureCamera: React.FC<GestureCameraProps> = ({
   onGestureDetected,
   isEnabled,
   onVideoElementReady,
+  onHandDetectionChange,
 }) => {
   const videoRef = useRef<HTMLVideoElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
@@ -171,6 +173,13 @@ export const GestureCamera: React.FC<GestureCameraProps> = ({
       onVideoElementReady(videoRef.current);
     }
   }, [onVideoElementReady, cameraStatus]);
+
+  // Effect to notify parent about hand detection changes
+  useEffect(() => {
+    if (onHandDetectionChange) {
+      onHandDetectionChange(handsDetected && cameraStatus === "active");
+    }
+  }, [handsDetected, cameraStatus, onHandDetectionChange]);
 
   // Retry function for error states
   const handleRetry = () => {

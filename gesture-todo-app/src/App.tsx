@@ -3,12 +3,18 @@
 import React, { useEffect } from "react";
 import "./App.css";
 import { useTodo, useApp } from "./contexts";
-import { TodoList, GestureCamera, GestureManager } from "./components";
+import {
+  TodoList,
+  GestureCamera,
+  GestureManager,
+  GestureIndicator,
+} from "./components";
 import { GestureType } from "./types";
 
 function AppContent() {
   const [videoElement, setVideoElement] =
     React.useState<HTMLVideoElement | null>(null);
+  const [isHandDetected, setIsHandDetected] = React.useState(false);
 
   const {
     state: todoState,
@@ -75,6 +81,10 @@ function AppContent() {
 
   const handleVideoElementReady = (element: HTMLVideoElement | null) => {
     setVideoElement(element);
+  };
+
+  const handleHandDetectionChange = (isDetected: boolean) => {
+    setIsHandDetected(isDetected);
   };
 
   if (!appState.isInitialized) {
@@ -155,12 +165,20 @@ function AppContent() {
             />
           </div>
 
-          {/* Gesture Camera */}
-          <div>
+          {/* Gesture Camera and Feedback */}
+          <div className="space-y-4">
             <GestureCamera
               onGestureDetected={handleGestureDetected}
               isEnabled={appState.gestureEnabled}
               onVideoElementReady={handleVideoElementReady}
+              onHandDetectionChange={handleHandDetectionChange}
+            />
+
+            {/* Gesture Indicator - shows current gesture and guide */}
+            <GestureIndicator
+              currentGesture={todoState.currentGesture}
+              isHandDetected={isHandDetected}
+              showGuide={false}
             />
           </div>
         </main>
