@@ -1,7 +1,12 @@
 /** @format */
 
 import React, { useEffect, useRef, useState, useCallback } from "react";
-import { GestureRecognizer } from "../services/gestureRecognizer";
+import {
+  GestureRecognizer,
+  GestureRecognitionError,
+  MediaPipeInitializationError,
+  FrameProcessingError,
+} from "../services/gestureRecognizer";
 import { useTodo, useApp } from "../contexts";
 import { GestureType } from "../types";
 
@@ -63,6 +68,10 @@ export const GestureManager: React.FC<GestureManagerProps> = ({
   const [feedbackMessage, setFeedbackMessage] = useState<string | null>(null);
   const [showAddTaskDialog, setShowAddTaskDialog] = useState(false);
   const [newTaskText, setNewTaskText] = useState("");
+  const [gestureError, setGestureError] = useState<string | null>(null);
+  const [fallbackMode, setFallbackMode] = useState(false);
+  const [retryCount, setRetryCount] = useState(0);
+  const maxRetries = 3;
 
   const {
     state: todoState,
@@ -75,6 +84,103 @@ export const GestureManager: React.FC<GestureManagerProps> = ({
   } = useTodo();
 
   const { state: appState } = useApp();
+
+  // Handle gesture recognition errors
+  const handleGestureError = useCallback(
+    (error: GestureRecognitionError) => {
+      console.error("Gesture recognition error:", error);
+
+      let errorMessage: string;
+      let shouldFallback = false;
+      let isTemporary = false;
+
+      if (error instanceof MediaPipeInitializationError) {
+        errorMessage =
+          "ジェスチャー認識の初期化に失敗しました。従来のマウス・キーボード操作をご利用ください。";
+        shouldFallback = true;
+        isTemporary = false;
+      } else if (error instanceof FrameProcessingError) {
+        if (retryCount >= maxRetries) {
+          errorMessage =
+            "ジェスチャー処理で繰り返しエラーが発生しました。従来の操作に切り替えます。";
+          shouldFallback = true;
+          isTemporary = false;
+        } else {
+          errorMessage = `ジェスチャー処理でエラーが発生しました。再試行中... (${
+            retryCount + 1
+          }/${maxRetries})`;
+          shouldFallback = false;
+          isTemporary = true;
+        }
+      } else {
+        if (retryCount >= maxRetries) {
+          errorMessage =
+            "ジェスチャー認識で繰り返しエラーが発生しました。従来の操作に切り替えます。";
+          shouldFallback = true;
+          isTemporary = false;
+        } else {
+          errorMessage = `ジェスチャー認識でエラーが発生しました。再試行中... (${
+            retryCount + 1
+          }/${maxRetries})`;
+          shouldFallback = false;
+          isTemporary = true;
+        }
+      }
+
+      setGestureError(errorMessage);
+      setFeedbackMessage(errorMessage);
+
+      if (shouldFallback) {
+        setFallbackMode(true);
+        setGestureMode(false);
+        console.log(
+          "Switching to fallback mode due to gesture recognition errors"
+        );
+
+        // Show persistent fallback message
+        setFeedbackMessage(
+          "ジェスチャー機能を無効にしました。マウス・キーボードで操作してください。"
+        );
+      } else if (isTemporary) {
+        // For temporary errors, clear message after shorter time
+        setTimeout(() => {
+          if (gestureError === errorMessage) {
+            setGestureError(null);
+          }
+          if (feedbackMessage === errorMessage) {
+            setFeedbackMessage(null);
+          }
+        }, 3000);
+        return;
+      }
+
+      // Clear error message after 8 seconds for permanent errors
+      setTimeout(() => {
+        setGestureError(null);
+        if (feedbackMessage === errorMessage) {
+          setFeedbackMessage(null);
+        }
+      }, 8000);
+    },
+    [retryCount, maxRetries, setGestureMode, gestureError, feedbackMessage]
+  );
+
+  // Retry gesture recognition
+  const retryGestureRecognition = useCallback(() => {
+    if (retryCount < maxRetries && videoElement) {
+      setRetryCount((prev) => prev + 1);
+      setGestureError(null);
+      setFallbackMode(false);
+
+      // Reinitialize gesture recognizer
+      if (gestureRecognizerRef.current) {
+        gestureRecognizerRef.current.dispose();
+        gestureRecognizerRef.current = null;
+      }
+
+      setIsInitialized(false);
+    }
+  }, [retryCount, maxRetries, videoElement]);
 
   // Handle gesture detection
   const handleGestureDetected = useCallback(
@@ -171,7 +277,7 @@ export const GestureManager: React.FC<GestureManagerProps> = ({
 
   // Initialize gesture recognizer
   useEffect(() => {
-    if (!isEnabled || !videoElement) {
+    if (!isEnabled || !videoElement || fallbackMode) {
       if (gestureRecognizerRef.current) {
         gestureRecognizerRef.current.dispose();
         gestureRecognizerRef.current = null;
@@ -183,34 +289,61 @@ export const GestureManager: React.FC<GestureManagerProps> = ({
 
     const initializeGestureRecognizer = async () => {
       try {
-        const recognizer = new GestureRecognizer(handleGestureDetected, {
-          confidenceThreshold: appState.gestureSettings.confidenceThreshold,
-          debounceFrames: Math.floor(
-            appState.gestureSettings.debounceTime / 33
-          ), // Convert ms to frames (assuming 30fps)
-          sensitivity: appState.gestureSettings.sensitivity,
-        });
+        const recognizer = new GestureRecognizer(
+          handleGestureDetected,
+          handleGestureError,
+          {
+            confidenceThreshold: appState.gestureSettings.confidenceThreshold,
+            debounceFrames: Math.floor(
+              appState.gestureSettings.debounceTime / 33
+            ), // Convert ms to frames (assuming 30fps)
+            sensitivity: appState.gestureSettings.sensitivity,
+            maxRetries: 3,
+            retryDelay: 1000,
+          }
+        );
 
         await recognizer.initialize(videoElement);
         gestureRecognizerRef.current = recognizer;
         setIsInitialized(true);
         setGestureMode(true);
+        setGestureError(null);
 
-        // Start processing frames
+        // Start processing frames with error handling
         const processFrames = async () => {
-          if (gestureRecognizerRef.current && isEnabled) {
+          if (gestureRecognizerRef.current && isEnabled && !fallbackMode) {
             try {
+              // Check if recognizer is still healthy
+              if (!gestureRecognizerRef.current.isHealthy()) {
+                console.warn(
+                  "Gesture recognizer is unhealthy, stopping frame processing"
+                );
+                return;
+              }
+
               await gestureRecognizerRef.current.processFrame(videoElement);
+              requestAnimationFrame(processFrames);
             } catch (error) {
               console.error("Frame processing error:", error);
+              // Error is handled by the recognizer's error callback
+              // Continue processing frames unless in fallback mode
+              if (!fallbackMode) {
+                requestAnimationFrame(processFrames);
+              }
             }
-            requestAnimationFrame(processFrames);
           }
         };
         processFrames();
       } catch (error) {
         console.error("Failed to initialize gesture recognizer:", error);
-        setFeedbackMessage("ジェスチャー認識の初期化に失敗しました");
+        handleGestureError(
+          error instanceof GestureRecognitionError
+            ? error
+            : new MediaPipeInitializationError(
+                "Initialization failed",
+                error instanceof Error ? error : undefined
+              )
+        );
       }
     };
 
@@ -227,7 +360,9 @@ export const GestureManager: React.FC<GestureManagerProps> = ({
   }, [
     isEnabled,
     videoElement,
+    fallbackMode,
     handleGestureDetected,
+    handleGestureError,
     appState.gestureSettings.confidenceThreshold,
     appState.gestureSettings.debounceTime,
     appState.gestureSettings.sensitivity,
@@ -268,15 +403,27 @@ export const GestureManager: React.FC<GestureManagerProps> = ({
         <div className="flex items-center space-x-2">
           <div
             className={`w-3 h-3 rounded-full ${
-              isInitialized ? "bg-green-500" : "bg-yellow-500"
+              fallbackMode
+                ? "bg-orange-500"
+                : gestureError
+                ? "bg-red-500"
+                : isInitialized
+                ? "bg-green-500"
+                : "bg-yellow-500"
             }`}
           />
           <span className="text-sm font-medium text-gray-800 dark:text-white">
-            {isInitialized ? "ジェスチャー認識中" : "初期化中..."}
+            {fallbackMode
+              ? "従来操作モード"
+              : gestureError
+              ? "エラー"
+              : isInitialized
+              ? "ジェスチャー認識中"
+              : "初期化中..."}
           </span>
         </div>
 
-        {currentAction && (
+        {currentAction && !fallbackMode && (
           <div className="mt-2 flex items-center space-x-2">
             <span className="text-lg">{currentAction.icon}</span>
             <span className="text-sm text-gray-600 dark:text-gray-300">
@@ -284,12 +431,40 @@ export const GestureManager: React.FC<GestureManagerProps> = ({
             </span>
           </div>
         )}
+
+        {fallbackMode && (
+          <div className="mt-2 flex items-center justify-between">
+            <span className="text-sm text-orange-600 dark:text-orange-400">
+              マウス/キーボードをご利用ください
+            </span>
+            {retryCount < maxRetries && (
+              <button
+                onClick={retryGestureRecognition}
+                className="text-xs px-2 py-1 bg-blue-600 text-white rounded hover:bg-blue-700 transition-colors"
+              >
+                再試行
+              </button>
+            )}
+          </div>
+        )}
       </div>
 
       {/* Feedback Message */}
       {feedbackMessage && (
-        <div className="bg-blue-100 dark:bg-blue-900/30 border border-blue-300 dark:border-blue-700 rounded-lg p-3 shadow-lg animate-fade-in">
-          <p className="text-blue-800 dark:text-blue-200 text-sm font-medium">
+        <div
+          className={`border rounded-lg p-3 shadow-lg animate-fade-in ${
+            gestureError
+              ? "bg-red-100 dark:bg-red-900/30 border-red-300 dark:border-red-700"
+              : "bg-blue-100 dark:bg-blue-900/30 border-blue-300 dark:border-blue-700"
+          }`}
+        >
+          <p
+            className={`text-sm font-medium ${
+              gestureError
+                ? "text-red-800 dark:text-red-200"
+                : "text-blue-800 dark:text-blue-200"
+            }`}
+          >
             {feedbackMessage}
           </p>
         </div>

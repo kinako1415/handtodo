@@ -8,13 +8,18 @@ import {
   GestureCamera,
   GestureManager,
   GestureIndicator,
+  GestureFallbackNotification,
 } from "./components";
+import { ErrorBoundary } from "./components/ErrorBoundary";
+import { DatabaseErrorNotification } from "./components/DatabaseErrorNotification";
 import { GestureType } from "./types";
 
 function AppContent() {
   const [videoElement, setVideoElement] =
     React.useState<HTMLVideoElement | null>(null);
   const [isHandDetected, setIsHandDetected] = React.useState(false);
+  const [gestureError, setGestureError] = React.useState<string | null>(null);
+  const [fallbackMode, setFallbackMode] = React.useState(false);
 
   const {
     state: todoState,
@@ -40,7 +45,7 @@ function AppContent() {
       await addTask(text);
     } catch (error) {
       console.error("Failed to add task:", error);
-      // TODO: Show user-friendly error message
+      // Error is handled by TodoContext and displayed via DatabaseErrorNotification
     }
   };
 
@@ -49,7 +54,7 @@ function AppContent() {
       await updateTask(id, { text: newText });
     } catch (error) {
       console.error("Failed to update task:", error);
-      // TODO: Show user-friendly error message
+      // Error is handled by TodoContext and displayed via DatabaseErrorNotification
     }
   };
 
@@ -58,7 +63,7 @@ function AppContent() {
       await toggleTaskCompletion(id);
     } catch (error) {
       console.error("Failed to toggle task:", error);
-      // TODO: Show user-friendly error message
+      // Error is handled by TodoContext and displayed via DatabaseErrorNotification
     }
   };
 
@@ -67,7 +72,7 @@ function AppContent() {
       await deleteTask(id);
     } catch (error) {
       console.error("Failed to delete task:", error);
-      // TODO: Show user-friendly error message
+      // Error is handled by TodoContext and displayed via DatabaseErrorNotification
     }
   };
 
@@ -87,6 +92,15 @@ function AppContent() {
     setIsHandDetected(isDetected);
   };
 
+  const handleRetryCamera = () => {
+    // This will trigger re-initialization of the camera
+    window.location.reload();
+  };
+
+  const handleEnableTraditionalMode = () => {
+    setFallbackMode(true);
+  };
+
   if (!appState.isInitialized) {
     return (
       <div className="min-h-screen bg-gray-100 dark:bg-gray-900 flex items-center justify-center">
@@ -102,6 +116,16 @@ function AppContent() {
 
   return (
     <div className="min-h-screen bg-gray-100 dark:bg-gray-900">
+      {/* Error Notifications */}
+      <DatabaseErrorNotification />
+      <GestureFallbackNotification
+        cameraStatus={todoState.cameraStatus}
+        gestureError={gestureError}
+        fallbackMode={fallbackMode}
+        onRetryCamera={handleRetryCamera}
+        onEnableTraditionalMode={handleEnableTraditionalMode}
+      />
+
       <div className="container mx-auto px-4 py-8 max-w-4xl">
         <header className="text-center mb-8">
           <h1 className="text-4xl font-bold text-gray-800 dark:text-white mb-2">
@@ -242,7 +266,11 @@ function AppContent() {
 }
 
 function App() {
-  return <AppContent />;
+  return (
+    <ErrorBoundary>
+      <AppContent />
+    </ErrorBoundary>
+  );
 }
 
 export default App;

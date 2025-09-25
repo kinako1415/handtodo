@@ -6,9 +6,17 @@ import React, {
   useReducer,
   useEffect,
   ReactNode,
+  useState,
 } from "react";
 import { Task, TodoState, GestureType, CameraPermission } from "../types";
-import { IndexedDBTodoDatabase } from "../services/database";
+import {
+  DatabaseFactory,
+  TodoDatabase,
+  DatabaseError,
+  DatabaseConnectionError,
+  DatabaseOperationError,
+  DatabaseQuotaError,
+} from "../services/database";
 
 // Action types for the reducer
 export type TodoAction =
@@ -162,10 +170,19 @@ function todoReducer(state: TodoState, action: TodoAction): TodoState {
   }
 }
 
+// Error state type
+interface ErrorState {
+  hasError: boolean;
+  errorMessage: string | null;
+  errorType: "database" | "operation" | "quota" | null;
+  canRetry: boolean;
+}
+
 // Context type
 interface TodoContextType {
   state: TodoState;
   dispatch: React.Dispatch<TodoAction>;
+  errorState: ErrorState;
   // Convenience methods
   addTask: (text: string) => Promise<void>;
   updateTask: (id: string, updates: Partial<Task>) => Promise<void>;
@@ -180,6 +197,16 @@ interface TodoContextType {
   // Database operations
   loadTasks: () => Promise<void>;
   initializeDatabase: () => Promise<void>;
+  // Error handling
+  clearError: () => void;
+  retryLastOperation: () => Promise<void>;
+  attemptDatabaseRecovery: () => Promise<boolean>;
+  // Data backup/recovery
+  exportData: () => Promise<{ tasks: Task[]; settings: Record<string, any> }>;
+  importData: (data: {
+    tasks: Task[];
+    settings: Record<string, any>;
+  }) => Promise<void>;
 }
 
 // Create context
@@ -192,12 +219,150 @@ interface TodoProviderProps {
 
 export function TodoProvider({ children }: TodoProviderProps) {
   const [state, dispatch] = useReducer(todoReducer, initialState);
-  const database = new IndexedDBTodoDatabase();
+  const [database, setDatabase] = useState<TodoDatabase | null>(null);
+  const [errorState, setErrorState] = useState<ErrorState>({
+    hasError: false,
+    errorMessage: null,
+    errorType: null,
+    canRetry: false,
+  });
+  const [lastFailedOperation, setLastFailedOperation] = useState<
+    (() => Promise<void>) | null
+  >(null);
 
   // Initialize database on mount
   useEffect(() => {
     initializeDatabase();
   }, []);
+
+  // Handle database errors with enhanced recovery
+  const handleDatabaseError = async (
+    error: unknown,
+    operation: string,
+    retryFn?: () => Promise<void>
+  ) => {
+    console.error(`Database error during ${operation}:`, error);
+
+    let errorMessage: string;
+    let errorType: ErrorState["errorType"];
+    let canRetry = false;
+    let shouldSwitchToFallback = false;
+
+    if (error instanceof DatabaseQuotaError) {
+      errorMessage =
+        "ストレージ容量が不足しています。データをエクスポートして不要なデータを削除してください。";
+      errorType = "quota";
+      canRetry = false;
+      shouldSwitchToFallback = true;
+    } else if (error instanceof DatabaseConnectionError) {
+      errorMessage =
+        "データベースに接続できません。一時的にメモリ内でデータを管理します。";
+      errorType = "database";
+      canRetry = true;
+      shouldSwitchToFallback = true;
+    } else if (error instanceof DatabaseOperationError) {
+      errorMessage = `操作に失敗しました: ${operation}。データの整合性を確認しています。`;
+      errorType = "operation";
+      canRetry = true;
+    } else {
+      errorMessage = `予期しないエラーが発生しました: ${
+        error instanceof Error ? error.message : "不明なエラー"
+      }。データ保護のため一時的にメモリ内で動作します。`;
+      errorType = "database";
+      canRetry = true;
+      shouldSwitchToFallback = true;
+    }
+
+    // Attempt to switch to fallback database if needed
+    if (shouldSwitchToFallback && !DatabaseFactory.isUsingFallbackDatabase()) {
+      try {
+        console.log("Switching to fallback database due to error");
+        const fallbackDB = await DatabaseFactory.switchToFallback();
+        setDatabase(fallbackDB);
+
+        errorMessage += " フォールバックデータベースに切り替えました。";
+
+        // Try to reload tasks from fallback
+        try {
+          const tasks = await fallbackDB.getAllTasks();
+          dispatch({ type: "SET_TASKS", payload: tasks });
+        } catch (fallbackError) {
+          console.warn("Failed to load tasks from fallback:", fallbackError);
+        }
+      } catch (fallbackError) {
+        console.error("Failed to switch to fallback database:", fallbackError);
+        errorMessage += " フォールバックデータベースの初期化にも失敗しました。";
+      }
+    }
+
+    setErrorState({
+      hasError: true,
+      errorMessage,
+      errorType,
+      canRetry,
+    });
+
+    if (retryFn) {
+      setLastFailedOperation(() => retryFn);
+    }
+  };
+
+  const clearError = () => {
+    setErrorState({
+      hasError: false,
+      errorMessage: null,
+      errorType: null,
+      canRetry: false,
+    });
+    setLastFailedOperation(null);
+  };
+
+  const retryLastOperation = async () => {
+    if (lastFailedOperation) {
+      try {
+        clearError();
+        await lastFailedOperation();
+      } catch (error) {
+        await handleDatabaseError(
+          error,
+          "retry operation",
+          lastFailedOperation
+        );
+      }
+    }
+  };
+
+  // Periodic backup to prevent data loss
+  useEffect(() => {
+    const backupInterval = setInterval(async () => {
+      try {
+        await DatabaseFactory.backupData();
+      } catch (error) {
+        console.warn("Periodic backup failed:", error);
+      }
+    }, 30000); // Backup every 30 seconds
+
+    return () => clearInterval(backupInterval);
+  }, []);
+
+  // Attempt database recovery
+  const attemptDatabaseRecovery = async (): Promise<boolean> => {
+    try {
+      const success = await DatabaseFactory.attemptRecovery();
+      if (success) {
+        const recoveredDB = await DatabaseFactory.createDatabase();
+        setDatabase(recoveredDB);
+        await loadTasks();
+        clearError();
+        console.log("Database recovery successful");
+        return true;
+      }
+      return false;
+    } catch (error) {
+      console.error("Database recovery failed:", error);
+      return false;
+    }
+  };
 
   // Sync state changes to database
   useEffect(() => {
@@ -221,27 +386,40 @@ export function TodoProvider({ children }: TodoProviderProps) {
   // Database operations
   const initializeDatabase = async () => {
     try {
-      await database.initialize();
+      const db = await DatabaseFactory.createDatabase();
+      setDatabase(db);
       await loadTasks();
+      clearError(); // Clear any previous errors
     } catch (error) {
       console.error("Failed to initialize database:", error);
+      handleDatabaseError(error, "initialize database", initializeDatabase);
       // Set camera status to error if database fails
       dispatch({ type: "SET_CAMERA_STATUS", payload: "error" });
     }
   };
 
   const loadTasks = async () => {
+    if (!database) {
+      console.warn("Database not initialized, skipping task load");
+      return;
+    }
+
     try {
       const tasks = await database.getAllTasks();
       dispatch({ type: "SET_TASKS", payload: tasks });
     } catch (error) {
       console.error("Failed to load tasks:", error);
+      handleDatabaseError(error, "load tasks", loadTasks);
     }
   };
 
   // Convenience methods
   const addTask = async (text: string) => {
-    try {
+    if (!database) {
+      throw new DatabaseConnectionError("Database not available");
+    }
+
+    const operation = async () => {
       const taskData = {
         text: text.trim(),
         completed: false,
@@ -259,34 +437,54 @@ export function TodoProvider({ children }: TodoProviderProps) {
       };
 
       dispatch({ type: "SET_TASKS", payload: [...state.tasks, newTask] });
+    };
+
+    try {
+      await operation();
     } catch (error) {
-      console.error("Failed to add task:", error);
+      handleDatabaseError(error, "add task", operation);
       throw error;
     }
   };
 
   const updateTask = async (id: string, updates: Partial<Task>) => {
-    try {
+    if (!database) {
+      throw new DatabaseConnectionError("Database not available");
+    }
+
+    const operation = async () => {
       // Update database first
       await database.updateTask(id, updates);
 
       // Then update local state
       dispatch({ type: "UPDATE_TASK", payload: { id, updates } });
+    };
+
+    try {
+      await operation();
     } catch (error) {
-      console.error("Failed to update task:", error);
+      handleDatabaseError(error, "update task", operation);
       throw error;
     }
   };
 
   const deleteTask = async (id: string) => {
-    try {
+    if (!database) {
+      throw new DatabaseConnectionError("Database not available");
+    }
+
+    const operation = async () => {
       // Delete from database first
       await database.deleteTask(id);
 
       // Then update local state
       dispatch({ type: "DELETE_TASK", payload: id });
+    };
+
+    try {
+      await operation();
     } catch (error) {
-      console.error("Failed to delete task:", error);
+      handleDatabaseError(error, "delete task", operation);
       throw error;
     }
   };
@@ -322,9 +520,48 @@ export function TodoProvider({ children }: TodoProviderProps) {
     dispatch({ type: "SET_CURRENT_GESTURE", payload: gesture });
   };
 
+  // Data backup/recovery methods
+  const exportData = async (): Promise<{
+    tasks: Task[];
+    settings: Record<string, any>;
+  }> => {
+    if (!database) {
+      throw new DatabaseConnectionError("Database not available");
+    }
+
+    try {
+      return await database.exportData();
+    } catch (error) {
+      handleDatabaseError(error, "export data");
+      throw error;
+    }
+  };
+
+  const importData = async (data: {
+    tasks: Task[];
+    settings: Record<string, any>;
+  }) => {
+    if (!database) {
+      throw new DatabaseConnectionError("Database not available");
+    }
+
+    const operation = async () => {
+      await database.importData(data);
+      await loadTasks(); // Reload tasks after import
+    };
+
+    try {
+      await operation();
+    } catch (error) {
+      handleDatabaseError(error, "import data", operation);
+      throw error;
+    }
+  };
+
   const contextValue: TodoContextType = {
     state,
     dispatch,
+    errorState,
     addTask,
     updateTask,
     deleteTask,
@@ -337,6 +574,11 @@ export function TodoProvider({ children }: TodoProviderProps) {
     setCurrentGesture,
     loadTasks,
     initializeDatabase,
+    clearError,
+    retryLastOperation,
+    attemptDatabaseRecovery,
+    exportData,
+    importData,
   };
 
   return (

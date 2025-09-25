@@ -3,16 +3,41 @@
 import { Hands, Results, NormalizedLandmark } from "@mediapipe/hands";
 import { GestureType } from "../types";
 
+// Gesture recognition error types
+export class GestureRecognitionError extends Error {
+  constructor(message: string, public readonly cause?: Error) {
+    super(message);
+    this.name = "GestureRecognitionError";
+  }
+}
+
+export class MediaPipeInitializationError extends GestureRecognitionError {
+  constructor(message: string, cause?: Error) {
+    super(message, cause);
+    this.name = "MediaPipeInitializationError";
+  }
+}
+
+export class FrameProcessingError extends GestureRecognitionError {
+  constructor(message: string, cause?: Error) {
+    super(message, cause);
+    this.name = "FrameProcessingError";
+  }
+}
+
 // Gesture recognition service with MediaPipe Hands integration
 interface GestureRecognizerConfig {
   confidenceThreshold?: number;
   debounceFrames?: number;
   historySize?: number;
   sensitivity?: number;
+  maxRetries?: number;
+  retryDelay?: number;
 }
 
 export class GestureRecognizer {
   private readonly onGestureDetected: (gesture: GestureType) => void;
+  private readonly onError: (error: GestureRecognitionError) => void;
   private hands: Hands | null = null;
   private isInitialized = false;
   private lastGesture: GestureType = "none";
@@ -23,21 +48,45 @@ export class GestureRecognizer {
   private gestureHistory: GestureType[] = [];
   private readonly historySize: number;
   private readonly sensitivity: number;
+  private readonly maxRetries: number;
+  private readonly retryDelay: number;
+  private retryCount = 0;
+  private isProcessing = false;
+  private consecutiveErrors = 0;
+  private readonly maxConsecutiveErrors = 10;
 
   constructor(
     onGestureDetected: (gesture: GestureType) => void,
+    onError: (error: GestureRecognitionError) => void,
     config: GestureRecognizerConfig = {}
   ) {
     this.onGestureDetected = onGestureDetected;
+    this.onError = onError;
     this.confidenceThreshold = config.confidenceThreshold ?? 0.8;
     this.debounceFrames = config.debounceFrames ?? 8;
     this.historySize = config.historySize ?? 10;
     this.sensitivity = config.sensitivity ?? 1.0;
+    this.maxRetries = config.maxRetries ?? 3;
+    this.retryDelay = config.retryDelay ?? 1000;
   }
 
   async initialize(videoElement: HTMLVideoElement): Promise<void> {
     try {
-      // Initialize MediaPipe Hands
+      // Check if MediaPipe is available
+      if (typeof Hands === "undefined") {
+        throw new MediaPipeInitializationError(
+          "MediaPipe Hands library is not available. Please check your internet connection."
+        );
+      }
+
+      // Check if video element is valid
+      if (!videoElement || videoElement.readyState === 0) {
+        throw new MediaPipeInitializationError(
+          "Video element is not ready or invalid"
+        );
+      }
+
+      // Initialize MediaPipe Hands with error handling
       this.hands = new Hands({
         locateFile: (file) => {
           return `https://cdn.jsdelivr.net/npm/@mediapipe/hands/${file}`;
@@ -52,14 +101,56 @@ export class GestureRecognizer {
         minTrackingConfidence: 0.5,
       });
 
-      // Set up results callback
-      this.hands.onResults(this.onResults.bind(this));
+      // Set up results callback with error handling
+      this.hands.onResults(this.onResultsWithErrorHandling.bind(this));
 
       this.isInitialized = true;
+      this.retryCount = 0;
+      this.consecutiveErrors = 0;
       console.log("GestureRecognizer initialized successfully");
     } catch (error) {
-      console.error("Failed to initialize GestureRecognizer:", error);
-      throw error;
+      const gestureError =
+        error instanceof GestureRecognitionError
+          ? error
+          : new MediaPipeInitializationError(
+              `Failed to initialize GestureRecognizer: ${
+                error instanceof Error ? error.message : "Unknown error"
+              }`,
+              error instanceof Error ? error : undefined
+            );
+
+      console.error("GestureRecognizer initialization failed:", gestureError);
+      this.onError(gestureError);
+      throw gestureError;
+    }
+  }
+
+  private onResultsWithErrorHandling(results: Results): void {
+    try {
+      this.onResults(results);
+      this.consecutiveErrors = 0; // Reset error count on success
+    } catch (error) {
+      this.consecutiveErrors++;
+      console.error("Error processing gesture results:", error);
+
+      const gestureError = new FrameProcessingError(
+        `Failed to process gesture results: ${
+          error instanceof Error ? error.message : "Unknown error"
+        }`,
+        error instanceof Error ? error : undefined
+      );
+
+      // If too many consecutive errors, disable gesture recognition
+      if (this.consecutiveErrors >= this.maxConsecutiveErrors) {
+        this.onError(
+          new GestureRecognitionError(
+            "Too many consecutive errors. Gesture recognition disabled."
+          )
+        );
+        this.dispose();
+      } else {
+        this.onError(gestureError);
+      }
     }
   }
 
@@ -120,14 +211,52 @@ export class GestureRecognizer {
 
   async processFrame(videoElement: HTMLVideoElement): Promise<void> {
     if (!this.hands || !this.isInitialized) {
-      throw new Error("GestureRecognizer not initialized");
+      throw new GestureRecognitionError("GestureRecognizer not initialized");
     }
 
+    if (this.isProcessing) {
+      return; // Skip frame if already processing
+    }
+
+    this.isProcessing = true;
+
     try {
+      // Check if video element is still valid
+      if (!videoElement || videoElement.readyState === 0) {
+        throw new FrameProcessingError("Video element is not ready");
+      }
+
       await this.hands.send({ image: videoElement });
     } catch (error) {
-      console.error("Error processing frame:", error);
-      throw error;
+      const frameError = new FrameProcessingError(
+        `Error processing frame: ${
+          error instanceof Error ? error.message : "Unknown error"
+        }`,
+        error instanceof Error ? error : undefined
+      );
+
+      // Attempt retry if within limits
+      if (this.retryCount < this.maxRetries) {
+        this.retryCount++;
+        console.warn(
+          `Frame processing failed, retrying (${this.retryCount}/${this.maxRetries}):`,
+          frameError
+        );
+
+        // Wait before retry
+        setTimeout(() => {
+          this.isProcessing = false;
+        }, this.retryDelay);
+
+        return;
+      }
+
+      // Reset retry count and report error
+      this.retryCount = 0;
+      this.onError(frameError);
+      throw frameError;
+    } finally {
+      this.isProcessing = false;
     }
   }
 
@@ -239,16 +368,48 @@ export class GestureRecognizer {
   }
 
   dispose(): void {
-    if (this.hands) {
-      this.hands.close();
-      this.hands = null;
+    try {
+      if (this.hands) {
+        this.hands.close();
+        this.hands = null;
+      }
+    } catch (error) {
+      console.warn("Error disposing MediaPipe Hands:", error);
     }
+
     this.isInitialized = false;
     this.lastGesture = "none";
     this.gestureConfidence = 0;
     this.frameCount = 0;
     this.gestureHistory = [];
+    this.retryCount = 0;
+    this.consecutiveErrors = 0;
+    this.isProcessing = false;
     console.log("GestureRecognizer disposed");
+  }
+
+  // Health check method
+  isHealthy(): boolean {
+    return (
+      this.isInitialized &&
+      this.hands !== null &&
+      this.consecutiveErrors < this.maxConsecutiveErrors
+    );
+  }
+
+  // Get error statistics
+  getErrorStats(): {
+    consecutiveErrors: number;
+    maxConsecutiveErrors: number;
+    retryCount: number;
+    maxRetries: number;
+  } {
+    return {
+      consecutiveErrors: this.consecutiveErrors,
+      maxConsecutiveErrors: this.maxConsecutiveErrors,
+      retryCount: this.retryCount,
+      maxRetries: this.maxRetries,
+    };
   }
 
   // Utility methods for gesture classification (to be used in task 6)

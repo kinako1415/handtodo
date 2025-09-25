@@ -48,7 +48,10 @@ async function testSetup() {
 
   // Test gesture recognizer class instantiation
   console.log("Testing gesture recognizer class...");
-  const recognizer = new GestureRecognizer(() => {});
+  const recognizer = new GestureRecognizer(
+    () => {},
+    () => {}
+  );
   console.log("Gesture recognizer instance created:", !!recognizer);
 
   console.log("✅ Project setup verification complete!");

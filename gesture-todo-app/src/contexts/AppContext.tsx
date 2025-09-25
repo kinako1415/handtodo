@@ -6,9 +6,14 @@ import React, {
   useReducer,
   useEffect,
   ReactNode,
+  useState,
 } from "react";
 import { CameraPermission } from "../types";
-import { IndexedDBTodoDatabase } from "../services/database";
+import {
+  DatabaseFactory,
+  TodoDatabase,
+  DatabaseError,
+} from "../services/database";
 
 // Camera status type
 export type CameraStatus =
@@ -138,7 +143,7 @@ interface AppProviderProps {
 
 export function AppProvider({ children }: AppProviderProps) {
   const [state, dispatch] = useReducer(appReducer, initialAppState);
-  const database = new IndexedDBTodoDatabase();
+  const [database, setDatabase] = useState<TodoDatabase | null>(null);
 
   // Initialize settings on mount
   useEffect(() => {
@@ -157,7 +162,8 @@ export function AppProvider({ children }: AppProviderProps) {
   // Initialize settings from database
   const initializeSettings = async () => {
     try {
-      await database.initialize();
+      const db = await DatabaseFactory.createDatabase();
+      setDatabase(db);
       await loadSettings();
       dispatch({ type: "SET_INITIALIZED", payload: true });
     } catch (error) {
@@ -169,6 +175,11 @@ export function AppProvider({ children }: AppProviderProps) {
 
   // Load settings from database
   const loadSettings = async () => {
+    if (!database) {
+      console.warn("Database not available, using default settings");
+      return;
+    }
+
     try {
       const [
         gestureEnabled,
@@ -212,6 +223,7 @@ export function AppProvider({ children }: AppProviderProps) {
       }
     } catch (error) {
       console.error("Failed to load settings:", error);
+      // Continue with default settings
     }
   };
 
@@ -228,6 +240,14 @@ export function AppProvider({ children }: AppProviderProps) {
   const updateGestureSettings = async (
     settings: Partial<AppState["gestureSettings"]>
   ) => {
+    // Update local state first for immediate feedback
+    dispatch({ type: "SET_GESTURE_SETTINGS", payload: settings });
+
+    if (!database) {
+      console.warn("Database not available, settings will not persist");
+      return;
+    }
+
     try {
       // Save to database
       const promises = [];
@@ -249,38 +269,57 @@ export function AppProvider({ children }: AppProviderProps) {
       }
 
       await Promise.all(promises);
-
-      // Update local state
-      dispatch({ type: "SET_GESTURE_SETTINGS", payload: settings });
     } catch (error) {
       console.error("Failed to update gesture settings:", error);
-      throw error;
+      // Don't throw error - local state is already updated
     }
   };
 
   const setTheme = async (theme: "light" | "dark") => {
+    // Update local state first for immediate feedback
+    dispatch({ type: "SET_THEME", payload: theme });
+
+    if (!database) {
+      console.warn("Database not available, theme setting will not persist");
+      return;
+    }
+
     try {
       await database.setSetting("theme", theme);
-      dispatch({ type: "SET_THEME", payload: theme });
     } catch (error) {
       console.error("Failed to save theme setting:", error);
-      // Still update local state even if save fails
-      dispatch({ type: "SET_THEME", payload: theme });
+      // Local state is already updated, so don't throw
     }
   };
 
   const setGestureEnabled = async (enabled: boolean) => {
+    // Update local state first for immediate feedback
+    dispatch({ type: "SET_GESTURE_ENABLED", payload: enabled });
+
+    if (!database) {
+      console.warn(
+        "Database not available, gesture enabled setting will not persist"
+      );
+      return;
+    }
+
     try {
       await database.setSetting("gestureEnabled", enabled);
-      dispatch({ type: "SET_GESTURE_ENABLED", payload: enabled });
     } catch (error) {
       console.error("Failed to save gesture enabled setting:", error);
-      // Still update local state even if save fails
-      dispatch({ type: "SET_GESTURE_ENABLED", payload: enabled });
+      // Local state is already updated, so don't throw
     }
   };
 
   const resetSettings = async () => {
+    // Reset local state first for immediate feedback
+    dispatch({ type: "INITIALIZE_SETTINGS", payload: initialAppState });
+
+    if (!database) {
+      console.warn("Database not available, settings reset will not persist");
+      return;
+    }
+
     try {
       // Reset to default values
       await Promise.all([
@@ -290,12 +329,9 @@ export function AppProvider({ children }: AppProviderProps) {
         database.setSetting("confidenceThreshold", 0.8),
         database.setSetting("debounceTime", 300),
       ]);
-
-      // Reset local state
-      dispatch({ type: "INITIALIZE_SETTINGS", payload: initialAppState });
     } catch (error) {
       console.error("Failed to reset settings:", error);
-      throw error;
+      // Local state is already reset, so don't throw
     }
   };
 

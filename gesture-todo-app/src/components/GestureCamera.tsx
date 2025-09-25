@@ -88,6 +88,13 @@ export const GestureCamera: React.FC<GestureCameraProps> = ({
       setCameraStatus("initializing");
       setError(null);
 
+      // Check if MediaPipe is available
+      if (typeof Hands === "undefined") {
+        throw new Error(
+          "MediaPipe Hands library is not available. Please check your internet connection."
+        );
+      }
+
       // Initialize MediaPipe Hands
       const hands = new Hands({
         locateFile: (file) => {
@@ -105,15 +112,25 @@ export const GestureCamera: React.FC<GestureCameraProps> = ({
       hands.onResults(onResults);
       handsRef.current = hands;
 
-      // Request camera access
+      // Request camera access with proper error handling
       if (!videoRef.current) {
         throw new Error("Video element not available");
+      }
+
+      // Check if getUserMedia is available
+      if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+        throw new Error("Camera access is not supported in this browser");
       }
 
       const camera = new Camera(videoRef.current, {
         onFrame: async () => {
           if (handsRef.current && videoRef.current) {
-            await handsRef.current.send({ image: videoRef.current });
+            try {
+              await handsRef.current.send({ image: videoRef.current });
+            } catch (frameError) {
+              console.warn("Frame processing error:", frameError);
+              // Don't throw here to avoid stopping the camera
+            }
           }
         },
         width: 640,
@@ -127,20 +144,44 @@ export const GestureCamera: React.FC<GestureCameraProps> = ({
       console.error("Failed to initialize MediaPipe:", err);
       const errorMessage = err instanceof Error ? err.message : "Unknown error";
 
+      // Enhanced error categorization for better fallback handling
       if (
         errorMessage.includes("Permission denied") ||
-        errorMessage.includes("NotAllowedError")
+        errorMessage.includes("NotAllowedError") ||
+        errorMessage.includes("permission")
       ) {
         setCameraStatus("permission_denied");
         setError(
-          "カメラアクセスが拒否されました。ブラウザの設定でカメラアクセスを許可してください。"
+          "カメラアクセスが拒否されました。従来のマウス・キーボード操作をご利用ください。ジェスチャー機能を使用するには、ブラウザの設定でカメラアクセスを許可してください。"
+        );
+        // Notify parent component to switch to fallback mode
+        onGestureDetected("none");
+      } else if (
+        errorMessage.includes("MediaPipe") ||
+        errorMessage.includes("not available") ||
+        errorMessage.includes("network") ||
+        errorMessage.includes("internet")
+      ) {
+        setCameraStatus("error");
+        setError(
+          "ジェスチャー認識ライブラリの読み込みに失敗しました。インターネット接続を確認してください。従来の操作をご利用いただけます。"
+        );
+      } else if (
+        errorMessage.includes("not supported") ||
+        errorMessage.includes("getUserMedia")
+      ) {
+        setCameraStatus("error");
+        setError(
+          "このブラウザではカメラアクセスがサポートされていません。従来のマウス・キーボード操作をご利用ください。"
         );
       } else {
         setCameraStatus("error");
-        setError(`カメラの初期化に失敗しました: ${errorMessage}`);
+        setError(
+          `カメラの初期化に失敗しました: ${errorMessage}。従来の操作をご利用いただけます。`
+        );
       }
     }
-  }, [onResults]);
+  }, [onResults, onGestureDetected]);
 
   // Cleanup function
   const cleanup = useCallback(() => {
